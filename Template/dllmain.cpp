@@ -1,4 +1,4 @@
-﻿// dllmain.cpp : 定义 DLL 应用程序的入口点。
+// dllmain.cpp : 定义 DLL 应用程序的入口点。
 #include "pch.h"
 #include <LLAPI.h>
 #pragma comment(lib, "../SDK/Lib/bedrock_server_api.lib")
@@ -18,7 +18,7 @@ BOOL APIENTRY DllMain( HMODULE hModule,
         // static_assert(false, "Please modify your plugin registration details and delete this line");
         LL::registerPlugin("PowerAssociationMapLeakFix", "Fixes Power Association Map memory leak issue", LL::Version(1, 0, 0), {
                 { "Note", "Fixes resource leak when removing associated components." },
-                { "Author", "glibcxx,jiangyan03" },
+                { "Author", "jiangyan03" },
                 { "Key", "Value" }
             }
         );

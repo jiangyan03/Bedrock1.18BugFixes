@@ -31,13 +31,11 @@ inline void CheckProtocolVersion() {
 
 
 void PluginInit() {
-
+    // 
     logger.setFile("logs/PowerAssociationMapLeakFix.log"); 
     CheckProtocolVersion();
     
-    //  Hook
+    // Hook
     PowerAssociationMapLeakFix::installHook();
-    
     logger.info("Plugin initialized. Hook activated!");
 }
-

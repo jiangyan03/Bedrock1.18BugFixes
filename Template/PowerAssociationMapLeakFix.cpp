@@ -1,127 +1,185 @@
 // PowerAssociationMapLeakFix.cpp
 #include "PowerAssociationMapLeakFix.h"
 #include <HookAPI.h>
+#include <LoggerAPI.h>
 #include <MC/BlockPos.hpp>
+#include <MC/BaseCircuitComponent.hpp>
 #include <MC/CircuitSceneGraph.hpp>
-
-//
-// —— POD 结构，只保证内存布局与真实类型二进制兼容 ——
-//
-
-// 对应 std::vector<BlockPos> / std::vector<PendingEntry> 之类的起止指针布局
-template<typename T>
-struct VectorPOD {
-    T*    _M_start;
-    T*    _M_finish;
-    T*    _M_end_of_storage;
-};
-
-// 对应 CircuitComponentList: start / finish / end_of_storage
-struct CircuitComponentListPOD {
-    void* _M_start;
-    void* _M_finish;
-    void* _M_end_of_storage;
-};
-
-// 对应 CircuitSceneGraph::PendingEntry 链表节点布局
-struct PendingEntryPOD {
-    uint64_t _next;
-    uint64_t _prev;
-    BlockPos mPos;
-    void*    mRawComponentPtr;
-};
-
-// --------------------------------------------------
-// 内存偏移（需与 BDS 1.18.2 保持一致！）
-// --------------------------------------------------
-static constexpr size_t OFF_mPowerAssociationMap = 0x58; // this+0x58 是第二个 map
-//                                       （若你起点按 0x40 对齐，请改为 0x98）
-
-// --------------------------------------------------
-// 哈希与比较策略（与引擎一致）
-// --------------------------------------------------
-struct BlockPosHash {
-    size_t operator()(BlockPos const& pos) const noexcept {
-        // 参考 mce::Math::hash3<int,int,int>
-        uint64_t k1 = static_cast<uint64_t>(pos.x);
-        uint64_t k2 = static_cast<uint64_t>(pos.y) << 21;
-        uint64_t k3 = static_cast<uint64_t>(pos.z) << 42;
-        // 简版：三者异或再折散
-        uint64_t h = k1 ^ k2 ^ k3;
-        // 高位混沌
-        h ^= (h >> 33);
-        h *= 0xff51afd7ed558ccdULL;
-        h ^= (h >> 33);
-        h *= 0xc4ceb9fe1a85ec53ULL;
-        h ^= (h >> 33);
-        return static_cast<size_t>(h);
-    }
-};
+#include <Utils/Hash.h>    // do_hash
+#include <cstring>         // std::memcpy, std::memmove
+Logger PowerAssociationMapLeakFix::logger("PowerAssociationMapLeakFix");
+static void (__fastcall *orig_removeStale)(CircuitSceneGraph*); // 可忽略不调用
 
 namespace PowerAssociationMapLeakFix {
+// ——— 偏移（请根据你的反编译结果微调） ———
+static constexpr size_t OFF_mAllComponents       = 0x40;   // this + 0x40: mAllComponents
+static constexpr size_t OFF_mPowerAssociationMap = 0x58;   // this + 0x58: mPowerAssociationMap
+static constexpr size_t OFF_mPendingUpdates      = 0x118;  // this + 0x118: mPendingUpdates
 
-// --------------------------------------------------
-// 使用 POD 类型但配合正确哈希和 equal_to
-// --------------------------------------------------
-using PowerMapType = std::unordered_map<
-    BlockPos,
-    CircuitComponentListPOD,
-    BlockPosHash,
-    std::equal_to<BlockPos>
->;
+// 每张 unordered_map 内部的 _Hash 桶结构相对表头的偏移（MSVC STL）
+// 这里假设三张表的内部布局相同，仅偏移不同
+static constexpr ptrdiff_t OFF_mask    = 0xC8;  // bucketMask:   hash._Mask
+static constexpr ptrdiff_t OFF_buckets = 0xB0;  // buckets base: hash._Buckets
+static constexpr ptrdiff_t OFF_end     = 0xA0;  // end sentinel: hash._EndNode
 
-// 原始函数指针
-using FnRemoveStale = void (__fastcall *)(CircuitSceneGraph *);
-static FnRemoveStale orig_removeStale = nullptr;
-
-// --------------------------------------------------
-// Hook 实现：先跑原版，再删除“空”的 power-list
-// --------------------------------------------------
-static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph* self) {
-    // 1) 调用引擎原始逻辑
-    orig_removeStale(self);
-
-    // 2) 拿到 mPowerAssociationMap 的指针
-    auto* powerMap = reinterpret_cast<PowerMapType*>(
-        reinterpret_cast<char*>(self) + OFF_mPowerAssociationMap
+// ——— 通用查表：返回“条目节点”地址（或 0） ———
+//   tableOffset: 三张表在 this 结构体内的起始偏移
+static uint64_t lookupHashMap(
+    CircuitSceneGraph* scene,
+    size_t              tableOffset,
+    const BlockPos&     key
+) {
+    if (!scene) {
+        logger.error("lookupHashMap空指针");
+        return 0;
+    } // 空指针检查
+    // 1) 计算三维坐标哈希
+    uint32_t buf[3] = {
+        static_cast<uint32_t>(key.x),
+        static_cast<uint32_t>(key.y),
+        static_cast<uint32_t>(key.z)
+    };
+    uint64_t h = do_hash(reinterpret_cast<char*>(buf), sizeof(buf));
+    
+    // 2) 拿到 mask / buckets / end
+    auto* maskPtr = reinterpret_cast<uint64_t*>(
+        reinterpret_cast<char*>(scene) + tableOffset + OFF_mask
     );
+    auto** buckets = reinterpret_cast<uint64_t**>(
+        reinterpret_cast<char*>(scene) + tableOffset + OFF_buckets
+    );
+    auto*  endNode = reinterpret_cast<uint64_t*>(
+        reinterpret_cast<char*>(scene) + tableOffset + OFF_end
+    );
+    // ✅ 立即打印这几个指针以检查是否有效
+    logger.info("tableOffset=0x{:X} => maskPtr={}, buckets={}, endNode={}", tableOffset, (void*)maskPtr, (void*)buckets, (void*)endNode);
 
-    // 3) 收集所有“空列表”的 key
-    std::vector<BlockPos> toErase;
-    toErase.reserve(16);
-    for (auto const& kv : *powerMap) {
-        auto const& pod = kv.second;
-        if (pod._M_start == pod._M_finish) {
-            toErase.push_back(kv.first);
+    __try {
+        uint64_t mask = *maskPtr;
+        if (mask > 0xFFFF) {
+            logger.error("异常 mask 值: 0x{:X}", mask);
+            return 0; // 防止读野指针
+        } // 检查关键指针
+
+        logger.info("mask=0x{:X}, buckets[0]={}, endNode=0x{:X}",
+            mask, (void*)buckets[0], (uint64_t)endNode);
+
+        // 3) 取尾指针判断“空桶”
+        size_t   idx  = (h & mask) * 2;    // 每桶两个指针：head/tail
+        uint64_t ent = buckets[idx+1][0];
+        if (!buckets[0] || !buckets[1]) {
+            logger.error("空桶：buckets[0]={}, buckets[1]={}", (void*)buckets[0], (void*)buckets[1]);
+            return 0;
         }
+        
+        // 4) 遍历链头直到找到匹配
+        uint64_t start = buckets[idx][0];
+        while (true) {
+            int32_t x = *reinterpret_cast<int32_t*>(ent + 0x10);
+            int32_t y = *reinterpret_cast<int32_t*>(ent + 0x14);
+            int32_t z = *reinterpret_cast<int32_t*>(ent + 0x18);
+            if (x==key.x && y==key.y && z==key.z) break;
+            if (ent==start) { ent = 0; break; }
+            ent = *reinterpret_cast<uint64_t*>(ent + 8);
+        }
+        logger.info("查找 HashMap (offset=0x{:X}): key=({}, {}, {}), mask=0x{:X}, idx={}", tableOffset, key.x, key.y, key.z, mask, idx);
+        if (!ent) ent = reinterpret_cast<uint64_t>(endNode);
+        return ent == reinterpret_cast<uint64_t>(endNode) ? 0 : ent;
     }
-
-    // 4) 真正删除
-    for (auto const& pos : toErase) {
-        powerMap->erase(pos);
+    __except (EXCEPTION_EXECUTE_HANDLER) {
+        logger.error("访问哈希表结构时触发异常！");
+        return 0;
     }
 }
 
-// --------------------------------------------------
-// 安装 Hook
-// --------------------------------------------------
-void installHook() {
-    constexpr char const* sym = "?removeStaleRelationships@CircuitSceneGraph@@AEAAXXZ";
-    void* target = dlsym_real(sym);
-    if (!target) {
-        #ifdef _DEBUG
-        Logger("PowerLeakFix").error("找不到符号 {}", sym);
-        #endif
+// ——— Hook 实现（不调用原版） ———
+static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph* scene) {
+    __try {
+        if (!scene) {orig_removeStale(scene); return;}
+        // 1) 遍历待更新队列
+        uint64_t* headPtr = reinterpret_cast<uint64_t*>(
+            reinterpret_cast<char*>(scene) + OFF_mPendingUpdates + 0x8
+        );
+        if (!headPtr || !*headPtr) return; // 检查链表头有效性
+
+        uint64_t head = *headPtr;
+        uint64_t cur = head;
+        while (true) {
+            cur = *reinterpret_cast<uint64_t*>(cur);
+            if (!cur || cur == head) break;
+            uint64_t node = cur;
+            if (!node) continue;
+
+            // 1.1 提取位置和组件
+            BlockPos posUpd;
+            // std::memcpy(&posUpd, node + 0x10, sizeof(posUpd));
+            std::memcpy(&posUpd, reinterpret_cast<void*>(node + 0x10), sizeof(posUpd));
+            // auto* rawComp = *reinterpret_cast<BaseCircuitComponent**>(node + 0x20);
+            BaseCircuitComponent* rawComp = *reinterpret_cast<BaseCircuitComponent**>(reinterpret_cast<void*>(node + 0x20));
+            if (!rawComp) continue;
+
+            // 2) 清理关联映射
+            uint64_t entPower = lookupHashMap(scene, OFF_mPowerAssociationMap, posUpd);
+            if (entPower) {
+                char* start = *reinterpret_cast<char**>(entPower + 0x20);
+                char* finish = *reinterpret_cast<char**>(entPower + 0x28);
+                constexpr size_t ENTRY = 32;
+
+                for (char* it = start; it < finish; ) {
+                    BlockPos chunk;
+                    std::memcpy(&chunk, it, sizeof(chunk));
+
+                    // 2.1 查找组件并移除关联
+                    if (auto entAll = lookupHashMap(scene, OFF_mAllComponents, chunk)) {
+                        auto uptr = reinterpret_cast<std::unique_ptr<BaseCircuitComponent>*>(entAll + 0x20);
+                        if (auto* comp = uptr->get()) {
+                            comp->removeSource(posUpd, rawComp);
+                        }
+                    }
+
+                    // 2.2 内存搬移
+                    std::memmove(it, it + ENTRY, finish - it - ENTRY);
+                    finish -= ENTRY;
+                    *reinterpret_cast<char**>(entPower + 0x28) = finish;
+                }
+            }
+        }
+    } 
+    __except(EXCEPTION_EXECUTE_HANDLER) {
+        orig_removeStale(scene);
+        logger.error("hooked_removeStaleRelationships: 捕获异常！");
         return;
     }
-    HookFunction(
-        target,
-        reinterpret_cast<void**>(&orig_removeStale),
-        reinterpret_cast<void*>(&hooked_removeStaleRelationships)
-    );
-    #ifdef _DEBUG
-    Logger("PowerLeakFix").info("PowerAssociationMap 漏泄修复已安装");
-    #endif
+}
+
+// 安装 Hook
+bool installHook() {
+    logger.info("?removeStaleRelationships@CircuitSceneGraph@@AEAAXXZ");
+    constexpr auto sym = "?removeStaleRelationships@CircuitSceneGraph@@AEAAXXZ";
+    __try {
+        void* addr = dlsym_real(sym);
+        if (!addr) {
+            logger.error("符号未找到: {}", sym);
+            return false;
+        }
+        logger.info("符号地址: 0x{:X}", (uintptr_t)addr);
+
+        int hookResult = HookFunction(
+            addr,
+            reinterpret_cast<void**>(&orig_removeStale),
+            reinterpret_cast<void*>(&hooked_removeStaleRelationships)
+        );
+        if (hookResult != 0) {
+            logger.error(" 钩子安装失败，错误码: {}", hookResult);
+            return false;
+        }
+
+        logger.info("钩子安装成功，地址: 0x{:X}", (uintptr_t)addr);
+        return true;
+    } __except (EXCEPTION_EXECUTE_HANDLER) {
+        logger.fatal("安装钩子时触发内存访问异常！");
+        return false;
+    }
 }
 
 } // namespace PowerAssociationMapLeakFix

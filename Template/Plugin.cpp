@@ -15,7 +15,7 @@
 #include "PowerAssociationMapLeakFix.h"  
 
 //  Logger
-Logger logger("PowerAssociationMapLeakFix");
+// Logger logger("PowerAssociationMapLeakFix");
 
 inline void CheckProtocolVersion() {
     #ifdef TARGET_BDS_PROTOCOL_VERSION
@@ -32,10 +32,18 @@ inline void CheckProtocolVersion() {
 
 void PluginInit() {
     // 
-    logger.setFile("logs/PowerAssociationMapLeakFix.log"); 
+    PowerAssociationMapLeakFix::logger.setFile("logs/PowerAssociationMapLeakFix.log"); 
+    PowerAssociationMapLeakFix::logger.info("try Hook");
     CheckProtocolVersion();
-    
-    // Hook
-    PowerAssociationMapLeakFix::installHook();
-    logger.info("Plugin initialized. Hook activated!");
+    try {
+        if (!PowerAssociationMapLeakFix::installHook()) {
+            PowerAssociationMapLeakFix::logger.error("Failed to install hook. Plugin will not continue.");
+            return;
+        }
+    } catch (const std::exception& e) {
+        PowerAssociationMapLeakFix::logger.fatal("Exception during installHook: {}", e.what());
+        throw;
+    }
+
+    PowerAssociationMapLeakFix::logger.info("Plugin initialized. Hook activated!");
 }

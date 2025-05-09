@@ -1,113 +1,127 @@
 // PowerAssociationMapLeakFix.cpp
 #include "PowerAssociationMapLeakFix.h"
 #include <HookAPI.h>
-#include <LoggerAPI.h>
-#include <MC/CircuitSceneGraph.hpp>
-#include <MC/BaseCircuitComponent.hpp>
 #include <MC/BlockPos.hpp>
-#include <array>
-#include <cstdint>
+#include <MC/CircuitSceneGraph.hpp>
 
-extern Logger logger;
+//
+// —— POD 结构，只保证内存布局与真实类型二进制兼容 ——
+//
 
-// 原 removeStaleRelationships 函数指针
-static void (__fastcall *original_removeStaleRelationships)(CircuitSceneGraph*);
+// 对应 std::vector<BlockPos> / std::vector<PendingEntry> 之类的起止指针布局
+template<typename T>
+struct VectorPOD {
+    T*    _M_start;
+    T*    _M_finish;
+    T*    _M_end_of_storage;
+};
 
-// 需要探测的偏移列表
-static constexpr std::array<size_t,7> OFFSETS = {{
-    0x120, // mPendingRemovals 链表头
-    0x0A0, // mPendingAdds._M_end_of_bucket_list
-    0x0B0, // mPendingAdds._M_buckets
-    0x0C8, // mPendingAdds._M_mask
-    0x008, // mComponents._M_end_of_bucket_list
-    0x018, // mComponents._M_buckets
-    0x030  // mComponents._M_mask
-}};
+// 对应 CircuitComponentList: start / finish / end_of_storage
+struct CircuitComponentListPOD {
+    void* _M_start;
+    void* _M_finish;
+    void* _M_end_of_storage;
+};
 
-// 打印偏移探测日志
-static void probeOffsets(CircuitSceneGraph* thiz, const char* tag) {
-    logger.info("{} [HookProbe] removeStaleRelationships {} ({:p})",
-                (tag[0]=='<'?"<<":"") , tag, (void*)thiz);
-    for (auto off : OFFSETS) {
-        void* addr = reinterpret_cast<char*>(thiz) + off;
-        uintptr_t val = 0;
-        bool ok = true;
-        __try {
-            val = *reinterpret_cast<uintptr_t*>(addr);
-        } __except (GetExceptionCode()==EXCEPTION_ACCESS_VIOLATION
-                     ? EXCEPTION_EXECUTE_HANDLER
-                     : EXCEPTION_CONTINUE_SEARCH) {
-            ok = false;
-        }
-        // if (ok) {
-        //     logger.info("    off 0x{:03X}: addr={:p}, val={:p}", off, addr, (void*)val);
-        // } else {
-        //     logger.warn("    off 0x{:03X}: addr={:p}, ACCESS VIOLATION", off, addr);
-        // }
+// 对应 CircuitSceneGraph::PendingEntry 链表节点布局
+struct PendingEntryPOD {
+    uint64_t _next;
+    uint64_t _prev;
+    BlockPos mPos;
+    void*    mRawComponentPtr;
+};
+
+// --------------------------------------------------
+// 内存偏移（需与 BDS 1.18.2 保持一致！）
+// --------------------------------------------------
+static constexpr size_t OFF_mPowerAssociationMap = 0x58; // this+0x58 是第二个 map
+//                                       （若你起点按 0x40 对齐，请改为 0x98）
+
+// --------------------------------------------------
+// 哈希与比较策略（与引擎一致）
+// --------------------------------------------------
+struct BlockPosHash {
+    size_t operator()(BlockPos const& pos) const noexcept {
+        // 参考 mce::Math::hash3<int,int,int>
+        uint64_t k1 = static_cast<uint64_t>(pos.x);
+        uint64_t k2 = static_cast<uint64_t>(pos.y) << 21;
+        uint64_t k3 = static_cast<uint64_t>(pos.z) << 42;
+        // 简版：三者异或再折散
+        uint64_t h = k1 ^ k2 ^ k3;
+        // 高位混沌
+        h ^= (h >> 33);
+        h *= 0xff51afd7ed558ccdULL;
+        h ^= (h >> 33);
+        h *= 0xc4ceb9fe1a85ec53ULL;
+        h ^= (h >> 33);
+        return static_cast<size_t>(h);
     }
-}
-
-// 手工遍历 this+0x120 的双向链表，清理空的节点(begin==end)
-static void cleanPendingRemovals(CircuitSceneGraph* thiz) {
-    // 1) 取出头指针
-    void* head = *reinterpret_cast<void**>(reinterpret_cast<char*>(thiz) + 0x120);
-    if (!head) {
-        logger.warn("[LeakFix] head@0x120 == nullptr, skip");
-        return;
-    }
-    // 2) head->prev 存放在 head+0x00
-    void* node = *reinterpret_cast<void**>(head);
-    if (node == head) {
-        // 链表空
-        logger.info("[LeakFix] mPendingRemovals is empty");
-        return;
-    }
-    int idx = 0;
-    // 3) 逆序遍历：while(node != head) { ... node = node->prev; }
-    while (node != head) {
-        void* prev = *reinterpret_cast<void**>(node);          // node->prev
-        void* begin = *reinterpret_cast<void**>(reinterpret_cast<char*>(node) + 0x20);
-        void* end   = *reinterpret_cast<void**>(reinterpret_cast<char*>(node) + 0x28);
-        logger.info("[LeakFix] Node[{}] @{:p}  begin={:p}, end={:p}", idx, node, begin, end);
-        if (begin == end) {
-            // 已经是空的，无需操作
-        } else {
-            // 如果要更严格判断「真正都死了」可以遍历 begin..end 调用 removeSource 等
-            // 这里我们直接把它清空，避免野内存
-            logger.info("[LeakFix]   clearing node[{}]", idx);
-            *reinterpret_cast<void**>(reinterpret_cast<char*>(node) + 0x20) = nullptr;
-            *reinterpret_cast<void**>(reinterpret_cast<char*>(node) + 0x28) = nullptr;
-        }
-        idx++;
-        node = prev;
-    }
-    logger.info("[LeakFix] cleaned {} nodes", idx);
-}
-
-// Hook 入口：探测→原调用→清理→探测
-static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph* thiz) {
-    probeOffsets(thiz, "START");
-    original_removeStaleRelationships(thiz);
-    cleanPendingRemovals(thiz);
-    probeOffsets(thiz, "END");
-}
+};
 
 namespace PowerAssociationMapLeakFix {
-    void installHook() {
-        constexpr char const* sym = "?removeStaleRelationships@CircuitSceneGraph@@AEAAXXZ";
-        void* target = dlsym_real(sym);
-        if (!target) {
-            logger.error("Failed to resolve symbol {}", sym);
-            return;
+
+// --------------------------------------------------
+// 使用 POD 类型但配合正确哈希和 equal_to
+// --------------------------------------------------
+using PowerMapType = std::unordered_map<
+    BlockPos,
+    CircuitComponentListPOD,
+    BlockPosHash,
+    std::equal_to<BlockPos>
+>;
+
+// 原始函数指针
+using FnRemoveStale = void (__fastcall *)(CircuitSceneGraph *);
+static FnRemoveStale orig_removeStale = nullptr;
+
+// --------------------------------------------------
+// Hook 实现：先跑原版，再删除“空”的 power-list
+// --------------------------------------------------
+static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph* self) {
+    // 1) 调用引擎原始逻辑
+    orig_removeStale(self);
+
+    // 2) 拿到 mPowerAssociationMap 的指针
+    auto* powerMap = reinterpret_cast<PowerMapType*>(
+        reinterpret_cast<char*>(self) + OFF_mPowerAssociationMap
+    );
+
+    // 3) 收集所有“空列表”的 key
+    std::vector<BlockPos> toErase;
+    toErase.reserve(16);
+    for (auto const& kv : *powerMap) {
+        auto const& pod = kv.second;
+        if (pod._M_start == pod._M_finish) {
+            toErase.push_back(kv.first);
         }
-        void* orig = nullptr;
-        int r = HookFunction(target, &orig, (void*)&hooked_removeStaleRelationships);
-        if (r != 0) {
-            logger.error("HookFunction failed: {}", r);
-            return;
-        }
-        original_removeStaleRelationships =
-            reinterpret_cast<decltype(original_removeStaleRelationships)>(orig);
-        logger.info("Probe-hook installed on removeStaleRelationships @{:p}", target);
+    }
+
+    // 4) 真正删除
+    for (auto const& pos : toErase) {
+        powerMap->erase(pos);
     }
 }
+
+// --------------------------------------------------
+// 安装 Hook
+// --------------------------------------------------
+void installHook() {
+    constexpr char const* sym = "?removeStaleRelationships@CircuitSceneGraph@@AEAAXXZ";
+    void* target = dlsym_real(sym);
+    if (!target) {
+        #ifdef _DEBUG
+        Logger("PowerLeakFix").error("找不到符号 {}", sym);
+        #endif
+        return;
+    }
+    HookFunction(
+        target,
+        reinterpret_cast<void**>(&orig_removeStale),
+        reinterpret_cast<void*>(&hooked_removeStaleRelationships)
+    );
+    #ifdef _DEBUG
+    Logger("PowerLeakFix").info("PowerAssociationMap 漏泄修复已安装");
+    #endif
+}
+
+} // namespace PowerAssociationMapLeakFix

@@ -86,7 +86,7 @@ static uint64_t lookupHashMap(
 
     // [1] 计算哈希值（使用 mce_hash3模拟内部的??$hash3@HHH@Math@mce@@SA_KAEBH00@Z proc near）
     int buf[3] = { key.x, key.y, key.z };
-    // logger.error("Coordinates: x={}, y={}, z={}", buf[0], buf[1], buf[2]);
+    logger.info("Coordinates: x={}, y={}, z={}", buf[0], buf[1], buf[2]);
     uint64_t h = computeHash3(key.x, key.y, key.z);
     // uint64_t h = mce_hash3(reinterpret_cast<const char*>(buf), sizeof(buf));
 
@@ -121,7 +121,7 @@ static uint64_t lookupHashMap(
     __try {
         // [4] 读取 mask 并校验合法性
         uint64_t mask = *maskPtr;
-        if (mask == 0 || mask > 0xFFFF) {
+        if (mask == 0 || mask > 0xFFFFFFFF) {
             logger.error("Invalid mask: 0x{:X} (tableOffset=0x{:X})", mask, tableOffset);
             return 0;
         }
@@ -191,12 +191,13 @@ static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph* scene)
 
             // --- 你的节点处理逻辑 ---
             // 3. 读 BlockPos
-            int px = *reinterpret_cast<int*>((char*)cur + 0x30);
-            int py = *reinterpret_cast<int*>((char*)cur + 0x34);
-            int pz = *reinterpret_cast<int*>((char*)cur + 0x38);
-            BlockPos posUpd{ px, py, pz };
+            // int px = *reinterpret_cast<int*>((char*)cur + 0x30);
+            // int py = *reinterpret_cast<int*>((char*)cur + 0x34);
+            // int pz = *reinterpret_cast<int*>((char*)cur + 0x38);
+            // BlockPos posUpd{ px, py, pz };
             // logger.error("Parsed BlockPos from relList: px={}, py={}, pz={}", px, py, pz);
-
+            BlockPos posUpd;
+            std::memcpy(&posUpd, reinterpret_cast<void*>(cur + 0x10), sizeof(posUpd));
             // 4. 取组件指针
             auto rawComp = *reinterpret_cast<BaseCircuitComponent**>((char*)cur + 0x20);
             if (rawComp) {
@@ -208,12 +209,13 @@ static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph* scene)
                     // 6. 遍历关系列表
                     for (char* it = start; it < finish; /* 迭代里自己推进 */) {
                         // 6.1 读 chunk
-                        int cx = *reinterpret_cast<int*>(it + 0);
-                        int cy = *reinterpret_cast<int*>(it + 4);
-                        int cz = *reinterpret_cast<int*>(it + 8);
-                        BlockPos chunk{ cx, cy, cz };
+                        // int cx = *reinterpret_cast<int*>(it + 0);
+                        // int cy = *reinterpret_cast<int*>(it + 4);
+                        // int cz = *reinterpret_cast<int*>(it + 8);
+                        // BlockPos chunk{ cx, cy, cz };
                         // logger.error("Parsed BlockPos from relList: cx={}, cy={}, cz={}", cx, cy, cz);
-
+                        BlockPos chunk;
+                        std::memcpy(&chunk, it, sizeof(chunk));
                         // 6.2 调原版 removeSource
                         if (auto entAll = lookupHashMap(scene, OFF_mAllComponents, chunk)) {
                             auto uptr = reinterpret_cast<std::unique_ptr<BaseCircuitComponent>*>(entAll + 0x20);

@@ -34,7 +34,7 @@ void PluginInit() {
     // 
     PowerAssociationMapLeakFix::logger.setFile("logs/PowerAssociationMapLeakFix.log"); 
     PowerAssociationMapLeakFix::logger.info("try Hook");
-    PowerAssociationMapLeakFix::setHash3FromSymbol("??$hash3@HHH@Math@mce@@SA_KAEBH00@Z");
+    // PowerAssociationMapLeakFix::setHash3FromSymbol("??$hash3@HHH@Math@mce@@SA_KAEBH00@Z");
     CheckProtocolVersion();
     try {
         if (!PowerAssociationMapLeakFix::installHook()) {

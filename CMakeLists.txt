@@ -27,7 +27,7 @@ add_compile_options(
         /utf-8  # 强制使用UTF-8编码
         /permissive- /GS /GL /W3 /Gy /Zc:wchar_t /Zi /Gm- /sdl /Zc:inline /fp:precise /errorReport:prompt /WX-
         /Zc:forScope /Gd /Oi /MD /std:c++17 /FC /EHsc /nologo /diagnostics:column
-        /wd4819  # 禁用C4819警告
+        /wd4819  
 )
 
 add_link_options(

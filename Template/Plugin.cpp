@@ -8,10 +8,9 @@
 #include <MC/Actor.hpp>
 #include <MC/Player.hpp>
 #include <MC/ItemStack.hpp>
-
-#include <MC/CircuitSceneGraph.hpp>
-#include <MC/BaseCircuitComponent.hpp>
 #include <LLAPI.h>
+// #include <MC/CircuitSceneGraph.hpp>
+// #include <MC/BaseCircuitComponent.hpp>
 #include "PowerAssociationMapLeakFix.h"  
 
 //  Logger
@@ -34,7 +33,6 @@ void PluginInit() {
     // 
     PowerAssociationMapLeakFix::logger.setFile("logs/PowerAssociationMapLeakFix.log"); 
     PowerAssociationMapLeakFix::logger.info("try Hook");
-    // PowerAssociationMapLeakFix::setHash3FromSymbol("??$hash3@HHH@Math@mce@@SA_KAEBH00@Z");
     CheckProtocolVersion();
     try {
         if (!PowerAssociationMapLeakFix::installHook()) {

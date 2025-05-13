@@ -17,7 +17,7 @@ BOOL APIENTRY DllMain( HMODULE hModule,
     case DLL_PROCESS_ATTACH:
         // static_assert(false, "Please modify your plugin registration details and delete this line");
         LL::registerPlugin("PowerAssociationMapLeakFix", "Fixes Power Association Map memory leak issue", LL::Version(1, 0, 0), {
-                { "Note", "Fixes resource leak when removing associated components." },
+                { "Note", "Fixes" },
                 { "Author", "jiangyan03" },
                 { "Key", "Value" }
             }

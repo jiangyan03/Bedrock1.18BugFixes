@@ -61,9 +61,21 @@ static uint64_t lookupHashMap(CircuitSceneGraph *scene, size_t tableOffset,
   return 0;
 }
 
+// 模拟 std::vector::erase(it) 的行为，适用于裸内存 vector（定长元素）
+inline uint8_t* eraseVectorEntry(uint8_t*& start, uint8_t*& finish, uint8_t* it, size_t ENTRY = 32) {
+    // assert(it >= start && it < finish);
+    uint8_t* next = it + ENTRY;
+    if (next < finish) {
+        std::memmove(it, next, finish - next);
+    }
+    finish -= ENTRY;
+    return it;
+}
+
+
 // 钩子：先跑原版，再补清残留
 static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph *scene) {
-  // 执行原版
+  // 不执行原版
   // orig_removeStale(scene);
   __try {
     // 拿到 pendingUpdates 哨兵
@@ -84,63 +96,26 @@ static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph *scene)
       if (!entPower) continue;
 
       // 清空 mComponent
-      constexpr size_t    ENTRY   =   32;  // CircuitComponentList entry 大小
-      constexpr ptrdiff_t OFF_VEC = 0x20;  // CircuitComponentList 内部 vector<Item> 的起始偏移
+      constexpr size_t    ENTRY   = 32;
+      constexpr ptrdiff_t OFF_VEC = 0x20;
       auto*  base       = reinterpret_cast<uint8_t*>(entPower) + OFF_VEC;
       auto** pStartPtr  = reinterpret_cast<uint8_t**>(base + 0x00);
       auto** pFinishPtr = reinterpret_cast<uint8_t**>(base + 0x08);
+      uint8_t*& start  = *pStartPtr;
+      uint8_t*& finish = *pFinishPtr;
 
-      uint8_t* start = *pStartPtr;
-      uint8_t* finish= *pFinishPtr;
-      size_t   len   = (finish - start) / ENTRY;
-      // 从尾部往前，每个 entry 都拿到 mPos 然后 removeSource，
-      // 最后“尾换头”拍平 vector
-      while (len > 0) {
-          // 取最后一个元素的地址
-          uint8_t* elem = start + (len - 1) * ENTRY;
-          // 读 mPos（偏移 12）
-          BlockPos chunkPos;
-          std::memcpy(&chunkPos, elem + 12, sizeof(chunkPos));
-          logger.error("chunkPos.x{},chunkPos.y{},chunkPos.z{}",chunkPos.x, chunkPos.y, chunkPos.z);
-          // 调用原逻辑 removeSource
-          if (uint64_t entAll = lookupHashMap(scene, OFF_mAllComponents, chunkPos)) {
-              // entAll+0x20 中存着 unique_ptr<BaseCircuitComponent>
-              auto uptrPtr = reinterpret_cast<std::unique_ptr<BaseCircuitComponent>*>(entAll + 0x20);
-              if (uptrPtr && uptrPtr->get())
-                  uptrPtr->get()->removeSource(posUpdate, rawComp);
-          }
-          // 如果不是最后一个，就把倒数第2个搬到这里
-          if (len > 1) {
-              std::memcpy(elem, elem - ENTRY, ENTRY);
-          }
-          --len;
+      for (uint8_t* it = start; it < finish; it = eraseVectorEntry(start, finish, it, ENTRY)) {
+        BlockPos chunkPos;
+        std::memcpy(&chunkPos, it + 12, sizeof(chunkPos)); // mPos 偏移 12
+        // 调用 removeSource
+        if (uint64_t entAll = lookupHashMap(scene, OFF_mAllComponents, chunkPos)) {
+            auto uptrPtr = reinterpret_cast<std::unique_ptr<BaseCircuitComponent>*>(entAll + 0x20);
+            if (uptrPtr && uptrPtr->get())
+                uptrPtr->get()->removeSource(posUpdate, rawComp);
+        }
       }
-      // 最后把 finish 指回 start，从而逻辑上 vector 变成了 empty
-      *pFinishPtr = start;
-      // char* beginPtr = *reinterpret_cast<char**>(entPower + 0x20);
-      // char* endPtr   = *reinterpret_cast<char**>(entPower + 0x28);
-      // size_t len     = (endPtr - beginPtr) / ENTRY;
-      // cast 回真正的 std::vector<Item> 对象
-      // ========== 下面是新的 vector 清空 ==========
-      // uint8_t* listBase = reinterpret_cast<uint8_t*>(entPower) + /*value偏移*/ 0x20;
-      // using Item = struct { BlockPos mPos; /*...*/ };
-      // Item** pStart  = reinterpret_cast<Item**>(listBase + 0x00);
-      // Item** pFinish = reinterpret_cast<Item**>(listBase + 0x08);
-      // Item*  begin   = *pStart;
-      // Item*  finish  = *pFinish;
-      // while (begin < finish) {
-      //   BlockPos chunk = begin->mPos;
-      //   logger.error("chunk.x{},chunk.y{},chunk.z{}",chunk.x, chunk.y, chunk.z);
-      //   if (uint64_t entAll = lookupHashMap(scene, OFF_mAllComponents, chunk)) {
-      //     auto uptr = *reinterpret_cast<BaseCircuitComponent**>(entAll + 0x20);
-      //     if (uptr) uptr->removeSource(posUpdate, rawComp);
-      //   }
-      //   // 尾部覆盖
-      //   --finish;
-      //   if (begin != finish) *begin = *finish;
-      //   *pFinish = finish;
-      // }
     }
+    orig_removeStale(scene);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     orig_removeStale(scene);
     logger.error("PowerAssociationMap 额外清理时发生异常，已跳过补充逻辑");

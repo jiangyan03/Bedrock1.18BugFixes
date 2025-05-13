@@ -11,3 +11,5 @@
 /cmake-build-*
 build/*
 SDK/*
+src/Tools/*
+src/Pdb/*

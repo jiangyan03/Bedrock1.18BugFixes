@@ -8,14 +8,14 @@ file(GLOB_RECURSE SRC_FILES_DIR
         ${PROJECT_SOURCE_DIR}/SDK/Header/*.cpp
         ${PROJECT_SOURCE_DIR}/SDK/Header/*.hpp
         ${PROJECT_SOURCE_DIR}/SDK/Header/*.h
-        ${PROJECT_SOURCE_DIR}/Template/*.cpp
-        ${PROJECT_SOURCE_DIR}/Template/*.hpp
-        ${PROJECT_SOURCE_DIR}/Template/*.h
+        ${PROJECT_SOURCE_DIR}/src/*.cpp
+        ${PROJECT_SOURCE_DIR}/src/*.hpp
+        ${PROJECT_SOURCE_DIR}/src/*.h
         )
 
 include_directories(${PROJECT_SOURCE_DIR}/SDK/Header)
 include_directories(${PROJECT_SOURCE_DIR}/SDK/Header/third-party)
-include_directories(${PROJECT_SOURCE_DIR}/Template)
+include_directories(${PROJECT_SOURCE_DIR}/src)
 
 
 link_directories(.)

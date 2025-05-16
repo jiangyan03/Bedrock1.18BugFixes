@@ -58,6 +58,14 @@ static uint64_t lookupHashMap(CircuitSceneGraph *scene, size_t tableOffset,
       return ent;
     ent = *reinterpret_cast<uint64_t *>(ent + 8);
   }
+  // 检查 tail
+  if (head) {
+      BlockPos pos;
+      std::memcpy(&pos, reinterpret_cast<void*>(head + 0x10), sizeof(pos));
+      if (pos.x==key.x && pos.y==key.y && pos.z==key.z) {
+          return head;
+      }
+  }
   return 0;
 }
 
@@ -72,11 +80,9 @@ inline uint8_t* eraseVectorEntry(uint8_t*& start, uint8_t*& finish, uint8_t* it,
     return it;
 }
 
-
-// 钩子：先跑原版，再补清残留
+// 钩子：补清残留
 static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph *scene) {
   // 不执行原版
-  // orig_removeStale(scene);
   __try {
     // 拿到 pendingUpdates 哨兵
     uint64_t sentinel = *reinterpret_cast<uint64_t *>(
@@ -88,7 +94,7 @@ static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph *scene)
     {
       BlockPos posUpdate;
       std::memcpy(&posUpdate, reinterpret_cast<void *>(cur + 0x10),sizeof(posUpdate));
-      // logger.error("posUpdate.x{},posUpdate.y{},posUpdate.z{}",posUpdate.x, posUpdate.y, posUpdate.z);
+      logger.error("posUpdate.x{},posUpdate.y{},posUpdate.z{}",posUpdate.x, posUpdate.y, posUpdate.z);
       auto rawComp = *reinterpret_cast<BaseCircuitComponent **>(reinterpret_cast<char *>(cur) + 0x20);
       if (!rawComp) continue;
       // 在 PowerAssociationMap中找那个 vector 结构
@@ -107,15 +113,16 @@ static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph *scene)
       for (uint8_t* it = start; it < finish; it = eraseVectorEntry(start, finish, it, ENTRY)) {
         BlockPos chunkPos;
         std::memcpy(&chunkPos, it + 12, sizeof(chunkPos)); // mPos 偏移 12
+        // logger.error("chunkPos.x{},chunkPos.y{},chunkPos.z{}",chunkPos.x, chunkPos.y, chunkPos.z);
         // 调用 removeSource
         if (uint64_t entAll = lookupHashMap(scene, OFF_mAllComponents, chunkPos)) {
             auto uptrPtr = reinterpret_cast<std::unique_ptr<BaseCircuitComponent>*>(entAll + 0x20);
             if (uptrPtr && uptrPtr->get())
                 uptrPtr->get()->removeSource(posUpdate, rawComp);
+                // logger.error("清理成功chunkPos.x{},chunkPos.y{},chunkPos.z{}",chunkPos.x, chunkPos.y, chunkPos.z);
         }
       }
     }
-    orig_removeStale(scene);
   } __except (EXCEPTION_EXECUTE_HANDLER) {
     orig_removeStale(scene);
     logger.error("PowerAssociationMap 额外清理时发生异常，已跳过补充逻辑");

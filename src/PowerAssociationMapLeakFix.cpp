@@ -94,7 +94,7 @@ static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph *scene)
     {
       BlockPos posUpdate;
       std::memcpy(&posUpdate, reinterpret_cast<void *>(cur + 0x10),sizeof(posUpdate));
-      logger.error("posUpdate.x{},posUpdate.y{},posUpdate.z{}",posUpdate.x, posUpdate.y, posUpdate.z);
+      // logger.error("posUpdate.x{},posUpdate.y{},posUpdate.z{}",posUpdate.x, posUpdate.y, posUpdate.z);
       auto rawComp = *reinterpret_cast<BaseCircuitComponent **>(reinterpret_cast<char *>(cur) + 0x20);
       if (!rawComp) continue;
       // 在 PowerAssociationMap中找那个 vector 结构

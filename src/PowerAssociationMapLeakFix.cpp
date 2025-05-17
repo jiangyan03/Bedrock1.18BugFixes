@@ -7,12 +7,10 @@
 #include <MC/BlockPos.hpp>
 #include <MC/CircuitSceneGraph.hpp>
 
-Logger PowerAssociationMapLeakFix::logger("PowerAssociationMapLeakFix");
-
 // 原版函数指针占位
 static void(__fastcall *orig_removeStale)(CircuitSceneGraph *);
 // update(BlockSource*)
-// static void (__fastcall *orig_update)(CircuitSceneGraph *, BlockSource *);
+static void (__fastcall *orig_update)(CircuitSceneGraph *, BlockSource *);
 
 namespace PowerAssociationMapLeakFix {
 
@@ -20,6 +18,7 @@ namespace PowerAssociationMapLeakFix {
 static constexpr size_t OFF_mAllComponents          = 0x00;
 static constexpr size_t OFF_mPowerAssociationMap    = 0x98;
 static constexpr size_t OFF_mPendingUpdates_relList = 0x120;
+
 
 // unordered_map 内部偏移
 static constexpr ptrdiff_t OFF_mask    = 0x30;
@@ -140,14 +139,14 @@ static void __fastcall hooked_removeStaleRelationships(CircuitSceneGraph *scene)
 }
 
 // —— 钩子：测量 update 耗时 —— 
-// static void __fastcall hooked_update(CircuitSceneGraph *scene, BlockSource *bs) {
-//     auto t0 = std::chrono::high_resolution_clock::now();
-//     // 调用原版 update
-//     orig_update(scene, bs);
-//     auto t1 = std::chrono::high_resolution_clock::now();
-//     auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
-//     logger.info("CircuitSceneGraph::update 耗时 {} ms", elapsed);
-// }
+static void __fastcall hooked_update(CircuitSceneGraph *scene, BlockSource *bs) {
+    auto t0 = std::chrono::high_resolution_clock::now();
+    // 调用原版 update
+    orig_update(scene, bs);
+    auto t1 = std::chrono::high_resolution_clock::now();
+    auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(t1 - t0).count();
+    logger.info("CircuitSceneGraph::update 耗时 {} ms", elapsed);
+}
 
 // 安装钩子
 bool installHook() {
@@ -165,15 +164,15 @@ bool installHook() {
   }
   HookFunction(addr, reinterpret_cast<void **>(&orig_removeStale), reinterpret_cast<void *>(&hooked_removeStaleRelationships));
   
-  // void *addr2 = dlsym_real("?update@CircuitSceneGraph@@QEAAXPEAVBlockSource@@@Z");
-  // if (!addr2) {
-  //     logger.error("找不到 CircuitSceneGraph::update 符号");
-  //     return false;
-  // }
-  // HookFunction(addr2, reinterpret_cast<void**>(&orig_update), reinterpret_cast<void*>(hooked_update));
-  // logger.info("Installed update hook @0x{:X}", (uintptr_t)addr2);
+  void *addr2 = dlsym_real("?update@CircuitSceneGraph@@QEAAXPEAVBlockSource@@@Z");
+  if (!addr2) {
+      logger.error("找不到 CircuitSceneGraph::update 符号");
+      return false;
+  }
+  HookFunction(addr2, reinterpret_cast<void**>(&orig_update), reinterpret_cast<void*>(hooked_update));
+  logger.info("Installed update hook @0x{:X}", (uintptr_t)addr2);
 
-  // logger.info("PowerAssociationMapLeakFix 钩子安装完成 @0x{:X}",(uintptr_t)addr);
+  logger.info("PowerAssociationMapLeakFix 钩子安装完成 @0x{:X}",(uintptr_t)addr);
   return true;
 }
 

@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.21)
-project(PowerAssociationMapLeakFix)
+project(BedrockArgon)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_BUILD_TYPE Release)
@@ -35,10 +35,11 @@ add_link_options(
         /MANIFESTUAC:NO /OPT:ICF /ERRORREPORT:PROMPT /NOLOGO /DELAYLOAD:"bedrock_server.dll" /TLBID:1
 )
 
-add_library(PowerAssociationMapLeakFix SHARED ${SRC_FILES_DIR})
+add_library(BedrockArgon SHARED ${SRC_FILES_DIR})
 
-add_custom_command(TARGET PowerAssociationMapLeakFix PRE_BUILD
+add_custom_command(TARGET BedrockArgon PRE_BUILD
         COMMAND cmd /c ${PROJECT_SOURCE_DIR}/prepareLib.cmd ${PROJECT_SOURCE_DIR}
         COMMENT "Preparing Library"
         )
+        
         

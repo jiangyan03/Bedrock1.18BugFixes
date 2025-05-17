@@ -1,3 +1,4 @@
+//plugin.cpp
 #include "pch.h"
 #include <EventAPI.h>
 #include <LoggerAPI.h>
@@ -14,7 +15,7 @@
 #include "PowerAssociationMapLeakFix.h"  
 
 //  Logger
-// Logger logger("PowerAssociationMapLeakFix");
+Logger logger("BedrockArgon");
 
 inline void CheckProtocolVersion() {
     #ifdef TARGET_BDS_PROTOCOL_VERSION
@@ -31,18 +32,18 @@ inline void CheckProtocolVersion() {
 
 void PluginInit() {
     // 
-    PowerAssociationMapLeakFix::logger.setFile("logs/PowerAssociationMapLeakFix.log"); 
-    PowerAssociationMapLeakFix::logger.info("try Hook");
+    logger.setFile("logs/BedrockArgon.log"); 
+    logger.info("try Hook");
     CheckProtocolVersion();
     try {
         if (!PowerAssociationMapLeakFix::installHook()) {
-            PowerAssociationMapLeakFix::logger.error("Failed to install hook. Plugin will not continue.");
+            logger.error("Failed to install hook. Plugin will not continue.");
             return;
         }
     } catch (const std::exception& e) {
-        PowerAssociationMapLeakFix::logger.fatal("Exception during installHook: {}", e.what());
+        logger.fatal("Exception during installHook: {}", e.what());
         throw;
     }
 
-    PowerAssociationMapLeakFix::logger.info("Plugin initialized. Hook activated!");
+    logger.info("Plugin initialized. Hook activated!");
 }
